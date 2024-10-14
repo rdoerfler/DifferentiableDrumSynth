@@ -1,6 +1,7 @@
 import torch
 import torch.nn as nn
-from dsp_utils import one_pole_lowpass, one_pole_highpass, exponential_envelope, resonant_filter, dc_offset_filter
+
+from dsp_utils import one_pole_lowpass, one_pole_highpass, exponential_envelope, one_pole_bandpass
 
 
 class ParametricDrumSynth(nn.Module):
@@ -25,10 +26,11 @@ class ParametricDrumSynth(nn.Module):
         """ Generates drum hit based on parameters. """
 
         transient = self.transient_generator(parameters[:5])
-        resonance = self.resonator(transient, parameters[5:8])
-        noise = self.noise_generator(parameters[8:])
+        resonance = self.resonator(transient, parameters[5:10])
+        noise = self.noise_generator(parameters[10:])
 
-        return resonance
+        # return transient + resonance + noise
+        return transient + resonance
 
 
 class TransientGenerator(nn.Module):
@@ -50,7 +52,7 @@ class TransientGenerator(nn.Module):
         # Generate audio
         sine_component = self._synthesize_sine(self.frequency, self.gain, self.decay)
         sine_component = torch.tanh(sine_component * self.saturation)
-        noise_component = self._synthesize_noise(torch.tensor([0.1]), self.gain / 2, self.decay * 20)
+        noise_component = self._synthesize_noise(torch.tensor([0.1]), self.gain / 10, self.decay * 100)
 
         return sine_component + noise_component
 
@@ -77,46 +79,38 @@ class TransientGenerator(nn.Module):
 
 class Resonator(nn.Module):
     def __init__(self, sample_rate: int = 48000, num_samples: int = 24000):
-        """
-        Args:
-            sample_rate: The sampling rate of the audio (default is 48 kHz).
-            num_samples: Number of samples to process in one forward pass.
-        """
         super(Resonator, self).__init__()
         self.num_samples = num_samples
         self.sample_rate = sample_rate
-        self.delay_length = 0
-
-        # Time indices for all samples, used for computing delay
-        self.register_buffer('output_signal', torch.zeros(num_samples, requires_grad=False))
-        self.register_buffer('delay_buffer', torch.zeros(num_samples, requires_grad=False))
+        self.register_buffer('output_signal', torch.zeros(num_samples))
+        self.register_buffer('delay_buffer', torch.zeros(num_samples))
 
     def forward(self, input_signal: torch.Tensor, parameters: torch.Tensor) -> torch.Tensor:
-        """
-        Args:
-            input_signal: 1D input signal of shape (num_samples).
-            parameters: A tensor containing the control parameters [frequency, feedback, gain].
-                        - frequency: Controls delay length based on the frequency.
-                        - feedback: Controls the feedback loop (0 to 1).
-                        - gain: Scales the output signal.
-        Returns:
-            output_signal: 1D output signal after applying the resonator.
-        """
-        # Derive parameters
-        frequency, feedback, gain = parameters[0], parameters[1], parameters[2]
+        frequency, feedback, filter_low, filter_high, gain = parameters[0], parameters[1], parameters[2], parameters[3], parameters[4]
 
         # Calculate the delay in samples
         delay_length = (self.sample_rate / frequency).long()
+
+        # Ensure delay_length is at least 1
+        delay_length = max(delay_length, 1)
+
+        # Calculate number of delays
         num_delays = self.num_samples // delay_length
 
-        # Calculate Delay Matrix to avoid in-place operations
-        delay_matrix = torch.zeros(num_delays, self.num_samples)
+        # Create a tensor of powers of feedback
+        feedback_powers = torch.pow(feedback, torch.arange(num_delays, device=input_signal.device))
+
+        # Initialize output tensor
+        output_signal = input_signal.clone()
+
+        # Apply delays and feedback
         for i in range(1, num_delays):
-            delay_matrix[i, i * delay_length:] = input_signal[:-i * delay_length] * feedback**i
+            delay_start = i * delay_length
+            delay_signal = self.delay_buffer[:self.num_samples - delay_start] * feedback_powers[i]
+            delay_signal = one_pole_bandpass(delay_signal, filter_low, filter_high)
+            output_signal[delay_start:] += delay_signal
 
-        output = torch.sum(delay_matrix, dim=0)
-
-        return output * gain
+        return output_signal * gain
 
 
 class NoiseGenerator(nn.Module):
@@ -146,26 +140,9 @@ class NoiseGenerator(nn.Module):
 def logits_to_params(logits: torch.Tensor, scaling_factors: torch.Tensor) -> torch.Tensor:
     """ Scales logits to synth parameters.
 
-    Mapping:
-    "transient_attack": 1.0,
-    "transient_decay": 32,
-    "transient_frequency": 250,
-    "transient_saturation": 20,
-    "transient_gain": 1.0,
-
-    "resonator_frequency": 250,
-    "resonator_feedback": 0.99,
-    "resonator_gain": 1.0,
-
-    "noise_attack": 1.0,
-    "noise_decay": 32,
-    "noise_gain": 1.0
-
     :param logits: Logits from the model.
     :param scaling_factors: Scaling factors for the logits.
-    :returns parameters: Parameters for the drum synth.
+    :returns: Sigmoid function applied to parameters.
     """
 
-    parameters = torch.sigmoid(logits) * scaling_factors
-
-    return parameters
+    return torch.sigmoid(logits) * scaling_factors

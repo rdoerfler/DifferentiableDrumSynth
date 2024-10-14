@@ -6,6 +6,7 @@ class DrumSoundLoss(torch.nn.Module):
     """ Custom loss function for drum synthesis. """
     def __init__(self, sample_rate: int = 48000):
         super().__init__()
+
         # Perceptual frequency loss
         self.loss_stft = auraloss.freq.MultiResolutionSTFTLoss(
             fft_sizes=[1024, 2048, 8192, 16384],

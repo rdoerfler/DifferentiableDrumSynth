@@ -27,7 +27,7 @@ if __name__ == '__main__':
     # Loss function
     loss_fn = DrumSoundLoss(sample_rate)
 
-    for i in range(200):
+    for i in range(10):
         optimizer.zero_grad()
         params = logits_to_params(logits, scaling_factors)
         audio_output = drum_synth(params)

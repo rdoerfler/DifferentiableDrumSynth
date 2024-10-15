@@ -10,7 +10,7 @@ from parametric_drum_synth import ParametricDrumSynth, logits_to_params
 if __name__ == '__main__':
 
     # Target audio
-    file_name = 'timpany'
+    file_name = 'frame_drum'
     audio, sample_rate = sf.read(f'../inputs/{file_name}.wav')
     target_audio = torch.tensor(audio, dtype=torch.float32)
     num_samples = target_audio.shape[0]

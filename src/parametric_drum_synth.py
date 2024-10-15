@@ -19,6 +19,7 @@ class ParametricDrumSynth(nn.Module):
 
         # Initialise Drum Synth Parameters
         self.transient_generator = TransientGenerator(self.sample_rate, self.num_samples)
+        self.tone_generator = ToneGenerator(self.sample_rate, self.num_samples)
         self.resonator = Resonator(self.sample_rate, self.num_samples)
         self.noise_generator = NoiseGenerator(self.sample_rate, self.num_samples)
 
@@ -26,11 +27,11 @@ class ParametricDrumSynth(nn.Module):
         """ Generates drum hit based on parameters. """
 
         transient = self.transient_generator(parameters[:5])
-        resonance = self.resonator(transient, parameters[5:10])
-        noise = self.noise_generator(parameters[10:])
+        tone = self.tone_generator(parameters[5:17])
+        # resonance = self.resonator(transient + tone, parameters[5:10])
+        noise = self.noise_generator(parameters[18:])
 
-        # return transient + resonance + noise
-        return transient + resonance
+        return transient + tone + noise
 
 
 class TransientGenerator(nn.Module):
@@ -75,6 +76,35 @@ class TransientGenerator(nn.Module):
         noise = one_pole_lowpass(noise, cutoff)
 
         return noise * decay * gain
+
+
+class ToneGenerator(nn.Module):
+    def __init__(self, sample_rate: int = 48000, num_samples: int = 24000):
+        super().__init__()
+        self.sample_rate = sample_rate
+        self.num_samples = num_samples
+
+    def forward(self, parameters: torch.Tensor) -> torch.Tensor:
+        """ Transient generator with envelope. """
+
+        # Set parameters
+        self.frequencies = parameters[:4]
+        self.decays = parameters[4:8]
+        self.gains = parameters[8:12]
+
+        # Generate audio
+        sine_components = self._synthesize_tones(self.frequencies, self.gains, self.decays)
+
+        return torch.sum(sine_components, dim=0)
+
+    def _synthesize_tones(self, frequencies: float, gains: float, decays: float) -> torch.Tensor:
+        """ Sine wave with exponential decay. """
+
+        time = torch.linspace(0, 1, self.num_samples)
+        sine_waves = torch.sin(2 * torch.pi * frequencies[:, None] * time)
+        decays = torch.exp(-decays[:, None] * time)
+
+        return sine_waves * decays * gains[:, None]
 
 
 class Resonator(nn.Module):
@@ -145,4 +175,4 @@ def logits_to_params(logits: torch.Tensor, scaling_factors: torch.Tensor) -> tor
     :returns: Sigmoid function applied to parameters.
     """
 
-    return torch.sigmoid(logits) * scaling_factors
+    return (torch.sigmoid(logits) ** 1) * scaling_factors

@@ -29,7 +29,7 @@ class DrumSoundLoss(torch.nn.Module):
         """ Compute custom loss. """
         loss_stft = self.loss_stft(x, y)
         loss_energy = self.loss_energy(x, y)
-        return loss_stft + loss_energy
+        return loss_stft + loss_energy * 0.25
 
 
 class RMSLoss(torch.nn.Module):

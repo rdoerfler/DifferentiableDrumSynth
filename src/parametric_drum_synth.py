@@ -28,8 +28,8 @@ class ParametricDrumSynth(nn.Module):
 
         transient = self.transient_generator(parameters[:5])
         tone = self.tone_generator(parameters[5:17])
-        # resonance = self.resonator(transient + tone, parameters[5:10])
-        noise = self.noise_generator(parameters[18:])
+        # resonance = self.resonator((transient + tone) * 0.5, parameters[17:22])
+        noise = self.noise_generator(parameters[22:])
 
         return transient + tone + noise
 

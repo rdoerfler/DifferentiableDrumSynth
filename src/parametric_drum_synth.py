@@ -1,15 +1,16 @@
 import torch
 import torch.nn as nn
+import torch.nn.functional as F
 
 from src.dsp_utils import one_pole_lowpass, one_pole_highpass, exponential_envelope, one_pole_bandpass
 
 
 class ParametricDrumSynth(nn.Module):
-    """ ParametricDrumSynth class for differentiable drum sound synthesis.
+    """ParametricDrumSynth class for differentiable drum sound synthesis.
 
-    :param sample_rate: Sample rate of the audio.
-    :param chunk_size: Length of the audio.
-    :returns audio_output: Audio output of the drum synth.
+    Args:
+        sample_rate: Sample rate of the audio in Hz
+        chunk_size: Length of the audio in samples
     """
 
     def __init__(self, sample_rate: int = 48000, chunk_size: int = 24000):
@@ -17,162 +18,314 @@ class ParametricDrumSynth(nn.Module):
         self.sample_rate = sample_rate
         self.chunk_size = chunk_size
 
-        # Initialise Drum Synth Parameters
+        # Initialize Drum Synth Components
         self.transient_generator = TransientGenerator(self.sample_rate, self.chunk_size)
         self.tone_generator = ToneGenerator(self.sample_rate, self.chunk_size)
         self.resonator = Resonator(self.sample_rate, self.chunk_size)
         self.noise_generator = NoiseGenerator(self.sample_rate, self.chunk_size)
 
     def forward(self, parameters: torch.Tensor) -> torch.Tensor:
-        """ Generates drum hit based on parameters. """
+        """Generates drum hit based on parameters.
 
-        transient = self.transient_generator(parameters[:5])
-        tone = self.tone_generator(parameters[5:17])
-        # resonance = self.resonator((transient + tone) * 0.5, parameters[17:22])
-        noise = self.noise_generator(parameters[22:])
+        Args:
+            parameters: Tensor of synthesizer parameters
 
-        return transient + tone + noise
+        Returns:
+            Synthesized audio output
+        """
+        # Apply small epsilon to avoid exactly zero parameters
+        parameters = parameters.clamp(min=1e-7)
+
+        # Split parameters for each component
+        transient_params = parameters[:5]
+        tone_params = parameters[5:17]
+        resonator_params = parameters[17:22]
+        noise_params = parameters[22:]
+
+        # Generate components
+        transient = self.transient_generator(transient_params)
+        tone = self.tone_generator(tone_params)
+        noise = self.noise_generator(noise_params)
+        mixed = (transient + tone) * 0.5
+        resonance = self.resonator(mixed, resonator_params)
+
+        # Mix components with safety clipping to prevent overflow
+        output = transient + tone + noise + resonance
+        return torch.tanh(output)  # Soft clip to avoid extreme values
 
 
 class TransientGenerator(nn.Module):
+    """Generates transient (attack) portion of drum sound with envelope."""
+
     def __init__(self, sample_rate: int = 48000, num_samples: int = 24000):
         super().__init__()
         self.sample_rate = sample_rate
         self.num_samples = num_samples
+        self.register_buffer('time', torch.linspace(0, 1, num_samples))
 
     def forward(self, parameters: torch.Tensor) -> torch.Tensor:
-        """ Transient generator with envelope. """
+        """Generate transient sound with enveloped sine and noise.
 
-        # Set parameters
-        self.attack = parameters[0]
-        self.decay = parameters[1]
-        self.frequency = parameters[2]
-        self.saturation = parameters[3]
-        self.gain = parameters[4]
+        Args:
+            parameters: [attack, decay, frequency, saturation, gain]
 
-        # Generate audio
-        sine_component = self._synthesize_sine(self.frequency, self.gain, self.decay)
-        sine_component = torch.tanh(sine_component * self.saturation)
-        noise_component = self._synthesize_noise(torch.tensor([0.1]), self.gain / 10, self.decay * 100)
+        Returns:
+            Transient audio component
+        """
+        # Apply safety clamping to parameters
+        attack = parameters[0].clamp(min=1e-7)
+        decay = parameters[1].clamp(min=1e-7)
+        frequency = parameters[2].clamp(min=1.0)  # Avoid zero frequency
+        saturation = parameters[3].clamp(min=0.01, max=100.0)  # Limit saturation range
+        gain = parameters[4].clamp(min=1e-7)
+
+        # Generate audio components
+        sine_component = self._synthesize_sine(frequency, gain, decay)
+
+        # Use tanh for soft saturation with gradient stability
+        sine_component = torch.tanh(sine_component * saturation)
+
+        # Generate noise with scaled parameters for stability
+        noise_decay = torch.clamp(decay * 100, min=0.1, max=1000.0)
+        noise_component = self._synthesize_noise(
+            torch.tensor([0.1], device=parameters.device),
+            gain / 10.0,
+            noise_decay
+        )
 
         return sine_component + noise_component
 
-    def _synthesize_sine(self, frequency: float, gain: float, decay: float) -> torch.Tensor:
-        """ Sine wave with exponential decay. """
+    def _synthesize_sine(
+            self,
+            frequency: torch.Tensor,
+            gain: torch.Tensor,
+            decay: torch.Tensor) -> torch.Tensor:
+        """Generate sine wave with exponential decay.
 
-        time = torch.linspace(0, 1, self.num_samples)
-        sine_wave = torch.sin(2 * torch.pi * frequency * time)
-        decay = torch.exp(-decay * time)
+        Args:
+            frequency: Sine wave frequency in Hz
+            gain: Amplitude scaling factor
+            decay: Decay rate for exponential envelope
 
-        return sine_wave * decay * gain
+        Returns:
+            Enveloped sine wave
+        """
+        phase = 2 * torch.pi * frequency * self.time
+        sine_wave = torch.sin(phase)
+        decay_env = torch.exp(-decay * self.time)
 
-    def _synthesize_noise(self, cutoff: float, gain: float, decay: float) -> torch.Tensor:
-        """ Filtered noise with envelope. """
+        return sine_wave * decay_env * gain
 
-        time = torch.linspace(0, 1, self.num_samples)
-        decay = torch.exp(-decay * time)
+    def _synthesize_noise(
+            self,
+            cutoff: torch.Tensor,
+            gain: torch.Tensor,
+            decay: torch.Tensor) -> torch.Tensor:
+        """Generate filtered noise with envelope.
 
-        noise = torch.randn(self.num_samples, requires_grad=False)
-        noise = one_pole_lowpass(noise, cutoff)
+        Args:
+            cutoff: Lowpass filter cutoff frequency
+            gain: Amplitude scaling factor
+            decay: Decay rate for exponential envelope
 
-        return noise * decay * gain
+        Returns:
+            Filtered and enveloped noise
+        """
+        # Create noise with detached gradient to prevent NaN in backward pass
+        noise = torch.randn(self.num_samples, device=gain.device)
+        # Apply lowpass filtering
+        filtered_noise = one_pole_lowpass(noise, cutoff)
+        # Apply exponential decay envelope
+        decay_env = torch.exp(-decay * self.time)
+
+        return filtered_noise * decay_env * gain
 
 
 class ToneGenerator(nn.Module):
+    """Generates tonal (pitched) portion of drum sound."""
+
     def __init__(self, sample_rate: int = 48000, num_samples: int = 24000):
         super().__init__()
         self.sample_rate = sample_rate
         self.num_samples = num_samples
+        self.register_buffer('time', torch.linspace(0, 1, num_samples))
 
     def forward(self, parameters: torch.Tensor) -> torch.Tensor:
-        """ Transient generator with envelope. """
+        """Generate tonal components from multiple sine oscillators.
 
-        # Set parameters
-        self.frequencies = parameters[:4]
-        self.decays = parameters[4:8]
-        self.gains = parameters[8:12]
+        Args:
+            parameters: Tensor containing [frequencies, decays, gains] for 4 oscillators
 
-        # Generate audio
-        sine_components = self._synthesize_tones(self.frequencies, self.gains, self.decays)
+        Returns:
+            Summed tonal audio output
+        """
+        # Split and safety clamp parameters
+        frequencies = parameters[:4].clamp(min=1.0)
+        decays = parameters[4:8].clamp(min=1e-7)
+        gains = parameters[8:12].clamp(min=1e-7)
 
+        # Generate and sum tonal components
+        sine_components = self._synthesize_tones(frequencies, gains, decays)
         return torch.sum(sine_components, dim=0)
 
-    def _synthesize_tones(self, frequencies: float, gains: float, decays: float) -> torch.Tensor:
-        """ Sine wave with exponential decay. """
+    def _synthesize_tones(
+            self,
+            frequencies: torch.Tensor,
+            gains: torch.Tensor,
+            decays: torch.Tensor) -> torch.Tensor:
+        """Generate multiple sine waves with exponential decay.
 
-        time = torch.linspace(0, 1, self.num_samples)
-        sine_waves = torch.sin(2 * torch.pi * frequencies[:, None] * time)
-        decays = torch.exp(-decays[:, None] * time)
+        Args:
+            frequencies: Vector of frequencies for each oscillator
+            gains: Vector of amplitude scaling factors
+            decays: Vector of decay rates
 
-        return sine_waves * decays * gains[:, None]
+        Returns:
+            Tensor of enveloped sine waves (oscillators × samples)
+        """
+        # Reshape for broadcasting
+        freq_expanded = frequencies.unsqueeze(1)
+        decay_expanded = decays.unsqueeze(1)
+        gain_expanded = gains.unsqueeze(1)
+
+        # Generate phase and sine waves
+        phase = 2 * torch.pi * freq_expanded * self.time
+        sine_waves = torch.sin(phase)
+
+        # Apply exponential decay envelope
+        decay_env = torch.exp(-decay_expanded * self.time)
+
+        # Apply gain scaling
+        return sine_waves * decay_env * gain_expanded
 
 
 class Resonator(nn.Module):
+    """Applies resonant filtering to input signal."""
+
     def __init__(self, sample_rate: int = 48000, num_samples: int = 24000):
         super(Resonator, self).__init__()
         self.num_samples = num_samples
         self.sample_rate = sample_rate
         self.register_buffer('output_signal', torch.zeros(num_samples))
         self.register_buffer('delay_buffer', torch.zeros(num_samples))
+        # Maximum number of delay lines to prevent excessive computation
+        self.max_num_delays = 50
 
     def forward(self, input_signal: torch.Tensor, parameters: torch.Tensor) -> torch.Tensor:
-        frequency, feedback, filter_low, filter_high, gain = parameters[0], parameters[1], parameters[2], parameters[3], parameters[4]
+        """Apply resonant filtering to input signal.
 
-        # Calculate the delay in samples
-        delay_length = (self.sample_rate / frequency).long()
+        Args:
+            input_signal: Audio input to process
+            parameters: [frequency, feedback, filter_low, filter_high, gain]
 
-        # Ensure delay_length is at least 1
-        delay_length = max(delay_length, 1)
+        Returns:
+            Processed audio with resonance
+        """
+        # Unpack and safety clamp parameters
+        frequency = parameters[0].clamp(min=20.0, max=self.sample_rate / 2)
+        feedback = parameters[1].clamp(min=0.0, max=0.99)
+        filter_low = parameters[2].clamp(min=1e-7, max=0.99)
+        filter_high = parameters[3].clamp(min=1e-7, max=0.99)
+        gain = parameters[4].clamp(min=1e-7)
 
-        # Calculate number of delays
-        num_delays = self.num_samples // delay_length
+        # Calculate delay in samples with safety bounds
+        delay_length = torch.clamp(
+            torch.floor(self.sample_rate / frequency),
+            min=1,
+            max=self.num_samples // 2
+        ).long()
 
-        # Create a tensor of powers of feedback
-        feedback_powers = torch.pow(feedback, torch.arange(num_delays, device=input_signal.device))
+        # Calculate number of delays with upper limit
+        num_delays = min(self.num_samples // delay_length, self.max_num_delays)
 
-        # Initialize output tensor
+        # Create feedback powers with numerical stability
+        feedback_powers = torch.pow(
+            feedback,
+            torch.arange(num_delays, device=input_signal.device, dtype=torch.float32)
+        )
+
+        # Initialize output with input
         output_signal = input_signal.clone()
 
-        # Apply delays and feedback
+        # Apply delays and feedback with improved numerical stability
         for i in range(1, num_delays):
             delay_start = i * delay_length
-            delay_signal = self.delay_buffer[:self.num_samples - delay_start] * feedback_powers[i]
-            delay_signal = one_pole_bandpass(delay_signal, filter_low, filter_high)
-            output_signal[delay_start:] += delay_signal
+            if delay_start >= self.num_samples:
+                break
 
-        return output_signal * gain
+            # Calculate delayed signal with scaling
+            delay_signal = torch.zeros_like(output_signal[delay_start:])
+            if self.num_samples - delay_start > 0:
+                # Copy appropriate segment from delay buffer
+                buffer_segment = self.delay_buffer[:self.num_samples - delay_start]
+                # Apply feedback scaling
+                delay_signal = buffer_segment * feedback_powers[i]
+                # Apply bandpass filtering
+                delay_signal = one_pole_bandpass(delay_signal, filter_low, filter_high)
+                # Add to output
+                output_signal[delay_start:] += delay_signal
+
+        # Update delay buffer for future calls (detached to prevent gradient accumulation)
+        self.delay_buffer = input_signal.detach()
+
+        # Apply gain with soft clipping for stability
+        return torch.tanh(output_signal * gain)
 
 
 class NoiseGenerator(nn.Module):
+    """Generates noise component with envelope and filtering."""
+
     def __init__(self, sample_rate: int = 48000, num_samples: int = 24000):
         super().__init__()
         self.num_samples = num_samples
         self.sample_rate = sample_rate
+        self.register_buffer('time', torch.linspace(0, 1, num_samples))
 
     def forward(self, parameters: torch.Tensor) -> torch.Tensor:
-        """ Noise generator with envelope. """
+        """Generate filtered noise with envelope.
 
-        # Set parameters
-        self.attack = parameters[0]
-        self.decay = parameters[1]
-        self.filter_lp = parameters[2]
-        self.filter_hp = parameters[3]
-        self.gain = parameters[4]
+        Args:
+            parameters: [attack, decay, filter_lp, filter_hp, gain]
 
-        # Generate audio
-        envelope = exponential_envelope(self.num_samples, self.attack, self.decay)
-        noise = torch.randn(self.num_samples, requires_grad=False)
-        noise = one_pole_lowpass(noise, self.filter_lp)
-        noise = one_pole_highpass(noise, self.filter_hp)
-        return noise * envelope * self.gain
+        Returns:
+            Filtered and enveloped noise
+        """
+        # Unpack and safety clamp parameters
+        attack = parameters[0].clamp(min=1e-7)
+        decay = parameters[1].clamp(min=1e-7)
+        filter_lp = parameters[2].clamp(min=1e-7, max=0.99)
+        filter_hp = parameters[3].clamp(min=1e-7, max=0.99)
+        gain = parameters[4].clamp(min=1e-7)
+
+        # Generate envelope
+        envelope = exponential_envelope(self.num_samples, attack, decay)
+
+        # Generate noise (detached to prevent NaN gradients)
+        noise = torch.randn(self.num_samples, device=parameters.device)
+
+        # Apply filtering
+        filtered = one_pole_lowpass(noise, filter_lp)
+        filtered = one_pole_highpass(filtered, filter_hp)
+
+        # Apply envelope and gain
+        return filtered * envelope * gain
 
 
 def logits_to_params(logits: torch.Tensor, scaling_factors: torch.Tensor) -> torch.Tensor:
-    """ Scales logits to synth parameters.
+    """Converts logits to synthesizer parameters with improved numerical stability.
 
-    :param logits: Logits from the model.
-    :param scaling_factors: Scaling factors for the logits.
-    :returns: Sigmoid function applied to parameters.
+    Args:
+        logits: Unconstrained parameters from model
+        scaling_factors: Scaling factors for each parameter
+
+    Returns:
+        Constrained synthesizer parameters
     """
+    # Apply sigmoid with numerical stability
+    normalized = torch.sigmoid(logits.clamp(min=-50.0, max=50.0))
 
-    return (torch.sigmoid(logits) ** 1) * scaling_factors
+    # Add small epsilon to prevent exactly zero values
+    normalized = normalized.clamp(min=1e-7, max=1.0)
+
+    # Apply scaling with safety factor
+    return normalized * scaling_factors

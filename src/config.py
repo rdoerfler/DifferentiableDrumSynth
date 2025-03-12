@@ -1,5 +1,10 @@
 import torch
 
+MODEL_PARAMS = dict(
+    epochs=1000,
+    learning_rate=1e-3,
+)
+
 
 def test_logits():
     logits = {

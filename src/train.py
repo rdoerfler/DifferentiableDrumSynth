@@ -6,6 +6,7 @@ from loss import DrumSoundLoss
 from parametric_drum_synth import ParametricDrumSynth, logits_to_params
 from tqdm import tqdm
 import os
+import matplotlib.pyplot as plt
 
 """ Train the drum synth model. """
 
@@ -106,21 +107,24 @@ def train_drum_synth(file_name, epochs=1000, lr=0.1, device=None):
 
 
 if __name__ == '__main__':
-    file_name = 'frame_drum'
-    best_logits, loss_history = train_drum_synth(file_name)
+    # hyper params
+    epochs = 1000
+    lr = 1e-3
 
-    # Optionally plot loss curve
-    try:
-        import matplotlib.pyplot as plt
+    # target file
+    file_name = 'conga'
 
-        plt.figure(figsize=(12, 6))
-        plt.plot(loss_history)
-        plt.title('Training Loss')
-        plt.xlabel('Epoch')
-        plt.ylabel('Loss')
-        plt.yscale('log')
-        plt.grid(True)
-        plt.savefig(f'../outputs/{file_name}_loss_curve.png')
-        plt.close()
-    except ImportError:
-        print("Matplotlib not available for plotting loss curve")
+    # fit model
+    best_logits, loss_history = train_drum_synth(file_name, epochs, lr)
+
+    # plot loss curve
+    plt.figure(figsize=(12, 6))
+    plt.plot(loss_history)
+    plt.title('Training Loss')
+    plt.xlabel('Epoch')
+    plt.ylabel('Loss')
+    plt.yscale('log')
+    plt.grid(True)
+    plt.savefig(f'../outputs/{file_name}_loss_curve.png')
+    plt.close()
+

@@ -1,27 +1,27 @@
 import torch
 import torch.nn as nn
 
-from dsp_utils import one_pole_lowpass, one_pole_highpass, exponential_envelope, one_pole_bandpass
+from src.dsp_utils import one_pole_lowpass, one_pole_highpass, exponential_envelope, one_pole_bandpass
 
 
 class ParametricDrumSynth(nn.Module):
     """ ParametricDrumSynth class for differentiable drum sound synthesis.
 
     :param sample_rate: Sample rate of the audio.
-    :param num_samples: Length of the audio.
+    :param chunk_size: Length of the audio.
     :returns audio_output: Audio output of the drum synth.
     """
 
-    def __init__(self, sample_rate: int = 48000, num_samples: int = 24000):
+    def __init__(self, sample_rate: int = 48000, chunk_size: int = 24000):
         super().__init__()
         self.sample_rate = sample_rate
-        self.num_samples = num_samples
+        self.chunk_size = chunk_size
 
         # Initialise Drum Synth Parameters
-        self.transient_generator = TransientGenerator(self.sample_rate, self.num_samples)
-        self.tone_generator = ToneGenerator(self.sample_rate, self.num_samples)
-        self.resonator = Resonator(self.sample_rate, self.num_samples)
-        self.noise_generator = NoiseGenerator(self.sample_rate, self.num_samples)
+        self.transient_generator = TransientGenerator(self.sample_rate, self.chunk_size)
+        self.tone_generator = ToneGenerator(self.sample_rate, self.chunk_size)
+        self.resonator = Resonator(self.sample_rate, self.chunk_size)
+        self.noise_generator = NoiseGenerator(self.sample_rate, self.chunk_size)
 
     def forward(self, parameters: torch.Tensor) -> torch.Tensor:
         """ Generates drum hit based on parameters. """

@@ -9,7 +9,7 @@ CHUNK_SIZE = 96000
 
 
 @pytest.fixture()
-def resonator(sample_rate: int = 48000, chunk_size: int = 96000):
+def resonator():
     return Resonator(sample_rate=SAMPLE_RATE, num_samples=CHUNK_SIZE)
 
 

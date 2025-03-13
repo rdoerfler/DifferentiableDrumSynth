@@ -3,7 +3,7 @@
 A PyTorch-based differentiable drum synthesizer that can learn to mimic target drum sounds through gradient descent.
 
 #### Overview
-This repository contains a parametric drum synthesis engine implemented as a differentiable neural network. 
+This repository contains a very simple parametric drum synthesis engine implemented as a differentiable neural network. 
 The synthesizer can generate synthetic drum sounds by optimizing its parameters to match target audio samples through backpropagation.
 
 #### Components
@@ -75,8 +75,9 @@ sf.write('outputs/kick_drum_playback.wav', audio_output.detach().numpy(), 48000)
 ```
 
 #### License
-This project is licensed under the MIT License - see the LICENSE file for details.
-#### Acknowledgments
+This project is licensed under the MIT License.
 
-This project was inspired by research in differentiable digital signal processing (DDSP).
-MRSTFT Loss function based on auraloss by Christian Steinmetz et al. 
+#### Acknowledgments
+This project was inspired by research in Differentiable Digital Signal Processing by [Engel et al.](https://arxiv.org/abs/2001.04643).
+
+MRSTFT Loss function based on auraloss by [Steinmetz et al.](https://static1.squarespace.com/static/5554d97de4b0ee3b50a3ad52/t/5fb1e9031c7089551a30c2e4/1605495044128/DMRN15__auraloss__Audio_focused_loss_functions_in_PyTorch.pdf)

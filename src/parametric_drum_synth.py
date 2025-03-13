@@ -266,7 +266,6 @@ class Resonator(nn.Module):
                 break
 
             # Calculate delayed signal with scaling
-            # delay_signal = torch.zeros_like(output_signal[delay_start:])
             if self.num_samples - delay_start > 0:
                 # Copy appropriate segment from delay buffer
                 buffer_segment = self.delay_buffer[:self.num_samples - delay_start]

@@ -6,6 +6,16 @@ MODEL_PARAMS = dict(
 )
 
 
+num_tones = 4
+
+PARAM_MAP = dict(
+    transient_params=5,
+    tone_params=num_tones * 3,
+    resonator_params=5,
+    noise_params=5,
+)
+
+
 def test_logits():
     logits = {
         "transient_attack": 0.01,

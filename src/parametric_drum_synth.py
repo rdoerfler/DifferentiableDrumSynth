@@ -3,6 +3,7 @@ import torch.nn as nn
 import torch.nn.functional as F
 
 from src.dsp_utils import one_pole_lowpass, one_pole_highpass, exponential_envelope, one_pole_bandpass
+from src.config import PARAM_MAP
 
 
 class ParametricDrumSynth(nn.Module):
@@ -13,45 +14,53 @@ class ParametricDrumSynth(nn.Module):
         chunk_size: Length of the audio in samples
     """
 
-    def __init__(self, sample_rate: int = 48000, chunk_size: int = 24000):
+    def __init__(self, num_tones: int = 12, sample_rate: int = 48000, chunk_size: int = 24000):
         super().__init__()
+        self.num_tones = num_tones
         self.sample_rate = sample_rate
         self.chunk_size = chunk_size
 
         # Initialize Drum Synth Components
         self.transient_generator = TransientGenerator(self.sample_rate, self.chunk_size)
-        self.tone_generator = ToneGenerator(self.sample_rate, self.chunk_size)
+        self.tone_generator = ToneGenerator(self.num_tones, self.sample_rate, self.chunk_size)
         self.resonator = Resonator(self.sample_rate, self.chunk_size)
         self.noise_generator = NoiseGenerator(self.sample_rate, self.chunk_size)
 
-    def forward(self, parameters: torch.Tensor) -> torch.Tensor:
+    def forward(self, params: torch.Tensor) -> torch.Tensor:
         """Generates drum hit based on parameters.
 
         Args:
-            parameters: Tensor of synthesizer parameters
+            params: Tensor of synthesizer parameters
 
         Returns:
             Synthesized audio output
         """
         # Apply small epsilon to avoid exactly zero parameters
-        parameters = parameters.clamp(min=1e-7)
+        params = params.clamp(min=1e-7)
 
-        # Split parameters for each component
-        transient_params = parameters[:5]
-        tone_params = parameters[5:17]
-        resonator_params = parameters[17:22]
-        noise_params = parameters[22:]
+        # Organize params into dict of
+        params = self._split_into_groups(params)
 
         # Generate components
-        transient = self.transient_generator(transient_params)
-        tone = self.tone_generator(tone_params)
-        noise = self.noise_generator(noise_params)
+        transient = self.transient_generator(params['transient_params'])
+        tone = self.tone_generator(params['tone_params'])
+        noise = self.noise_generator(params['noise_params'])
         mixed = (transient + tone) * 0.5
-        resonance = self.resonator(mixed, resonator_params)
+        resonance = self.resonator(mixed, params['resonator_params'])
 
         # Mix components with safety clipping to prevent overflow
         output = transient + tone + noise + resonance
         return torch.tanh(output)  # Soft clip to avoid extreme values
+
+    @staticmethod
+    def _split_into_groups(params: torch.Tensor):
+        """Splits parameters into groups as defined in config."""
+        params_mapped = {}
+        idx = 0
+        for name, val in PARAM_MAP.items():
+            params_mapped[name] = params[idx:idx + val]
+            idx += val
+        return params_mapped
 
 
 class TransientGenerator(nn.Module):
@@ -75,8 +84,8 @@ class TransientGenerator(nn.Module):
         # Apply safety clamping to parameters
         attack = parameters[0].clamp(min=1e-7)
         decay = parameters[1].clamp(min=1e-7)
-        frequency = parameters[2].clamp(min=1.0)  # Avoid zero frequency
-        saturation = parameters[3].clamp(min=0.01, max=100.0)  # Limit saturation range
+        frequency = parameters[2].clamp(min=1.0)
+        saturation = parameters[3].clamp(min=0.01, max=100.0)
         gain = parameters[4].clamp(min=1e-7)
 
         # Generate audio components
@@ -87,6 +96,8 @@ class TransientGenerator(nn.Module):
 
         # Generate noise with scaled parameters for stability
         noise_decay = torch.clamp(decay * 100, min=0.1, max=1000.0)
+
+        # Synthesise transient noise
         noise_component = self._synthesize_noise(
             torch.tensor([0.1], device=parameters.device),
             gain / 10.0,
@@ -144,8 +155,9 @@ class TransientGenerator(nn.Module):
 class ToneGenerator(nn.Module):
     """Generates tonal (pitched) portion of drum sound."""
 
-    def __init__(self, sample_rate: int = 48000, num_samples: int = 24000):
+    def __init__(self, num_voices: int = 12, sample_rate: int = 48000, num_samples: int = 24000):
         super().__init__()
+        self.num_voices = num_voices
         self.sample_rate = sample_rate
         self.num_samples = num_samples
         self.register_buffer('time', torch.linspace(0, 1, num_samples))
@@ -160,9 +172,9 @@ class ToneGenerator(nn.Module):
             Summed tonal audio output
         """
         # Split and safety clamp parameters
-        frequencies = parameters[:4].clamp(min=1.0)
-        decays = parameters[4:8].clamp(min=1e-7)
-        gains = parameters[8:12].clamp(min=1e-7)
+        frequencies = parameters[:self.num_voices].clamp(min=1.0)
+        decays = parameters[self.num_voices:2 * self.num_voices].clamp(min=1e-7)
+        gains = parameters[2 * self.num_voices:].clamp(min=1e-7)
 
         # Generate and sum tonal components
         sine_components = self._synthesize_tones(frequencies, gains, decays)
@@ -254,7 +266,7 @@ class Resonator(nn.Module):
                 break
 
             # Calculate delayed signal with scaling
-            delay_signal = torch.zeros_like(output_signal[delay_start:])
+            # delay_signal = torch.zeros_like(output_signal[delay_start:])
             if self.num_samples - delay_start > 0:
                 # Copy appropriate segment from delay buffer
                 buffer_segment = self.delay_buffer[:self.num_samples - delay_start]

@@ -1,4 +1,5 @@
 import soundfile as sf
+import numpy as np
 import torch
 import torch.nn as nn
 import config
@@ -21,11 +22,12 @@ def train_drum_synth(file_name, epochs=1000, lr=0.1, device=None):
 
     # Target audio
     audio, sample_rate = sf.read(f'../inputs/{file_name}.wav')
+    audio = np.mean(audio, axis=-1) if len(audio.shape) > 1 else audio
     target_audio = torch.tensor(audio, dtype=torch.float32).to(device)
     num_samples = target_audio.shape[0]
 
     # Initialize model
-    drum_synth = ParametricDrumSynth(sample_rate, num_samples).to(device)
+    drum_synth = ParametricDrumSynth(config.num_tones, sample_rate, num_samples).to(device)
 
     # Initialize parameters
     scaling_factors = config.scaling_factors().to(device)
@@ -112,7 +114,7 @@ if __name__ == '__main__':
     lr = 1e-3
 
     # target file
-    file_name = 'conga'
+    file_name = 'snare'
 
     # fit model
     best_logits, loss_history = train_drum_synth(file_name, epochs, lr)
